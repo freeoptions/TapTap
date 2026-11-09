@@ -1,0 +1,17 @@
+<idea-plugin>
+    <id>local.urlcontroller</id>
+    <name>URL Controller Search</name>
+    <version>1.0.2</version>
+    <vendor>Local Tools</vendor>
+    <description><![CDATA[
+        Find Java Spring MVC controller methods by URL in Search Everywhere (double Shift).
+        Case-insensitive matching, persistent incremental index, and in-memory route cache.
+    ]]></description>
+    <idea-version since-build="231" until-build="253.*"/>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <fileBasedIndex implementation="local.urlcontroller.SpringRouteIndex"/>
+        <searchEverywhereContributor implementation="local.urlcontroller.ControllerContributorFactory"/>
+    </extensions>
+</idea-plugin>
