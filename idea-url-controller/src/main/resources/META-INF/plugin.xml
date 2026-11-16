@@ -1,7 +1,7 @@
-<idea-plugin>
+<idea-plugin require-restart="true">
     <id>local.urlcontroller</id>
     <name>URL Controller Search</name>
-    <version>1.0.2</version>
+    <version>1.1.6</version>
     <vendor>Local Tools</vendor>
     <description><![CDATA[
         Find Java Spring MVC controller methods by URL in Search Everywhere (double Shift).
@@ -9,9 +9,18 @@
     ]]></description>
     <idea-version since-build="231" until-build="253.*"/>
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
     <depends>com.intellij.java</depends>
     <extensions defaultExtensionNs="com.intellij">
         <fileBasedIndex implementation="local.urlcontroller.SpringRouteIndex"/>
         <searchEverywhereContributor implementation="local.urlcontroller.ControllerContributorFactory"/>
     </extensions>
+    <applicationListeners>
+        <listener class="local.urlcontroller.MultiKeywordFindListener"
+                  topic="com.intellij.openapi.actionSystem.ex.AnActionListener"/>
+    </applicationListeners>
+    <projectListeners>
+        <listener class="local.urlcontroller.CommitPreviewWindows"
+                  topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    </projectListeners>
 </idea-plugin>

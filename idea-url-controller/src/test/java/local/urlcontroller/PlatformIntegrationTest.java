@@ -39,8 +39,11 @@ public final class PlatformIntegrationTest {
 
     private static void run(CodeInsightTestFixture fixture) throws Exception {
         Project project = fixture.getProject();
+        InactiveDiffWindowTest.run(fixture);
+        MultiKeywordPlatformTest.run(project);
         com.intellij.testFramework.EdtTestUtil.runInEdtAndWait(() ->
                 com.intellij.testFramework.PsiTestUtil.addSourceContentToRoots(fixture.getModule(), fixture.getTempDirFixture().findOrCreateDir("")));
+        MultiKeywordPlatformTest.searchFiles(fixture);
         PsiJavaFile file = (PsiJavaFile) fixture.addFileToProject("src/example/Orders.java", """
                 package example;
                 import org.springframework.web.bind.annotation.*;

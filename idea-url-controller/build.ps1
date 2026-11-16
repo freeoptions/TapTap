@@ -12,6 +12,7 @@ $java = Join-Path $JavaHome 'bin\java.exe'
 $classes = Join-Path $BuildDirectory 'classes'
 $tests = Join-Path $BuildDirectory 'tests'
 New-Item -ItemType Directory -Force -Path $classes,$tests | Out-Null
+Get-ChildItem -LiteralPath $classes,$tests -Filter '*.class' -File -Recurse | Remove-Item -Force
 $sdkJars = @(Get-ChildItem -LiteralPath (Join-Path $SdkHome 'lib') -Filter '*.jar')
 $sdkJars += @(Get-ChildItem -LiteralPath (Join-Path $SdkHome 'plugins\java\lib') -Filter '*.jar' -Recurse)
 $classpath = ($sdkJars.FullName -join ';')
@@ -29,6 +30,8 @@ if (!(Test-Path -LiteralPath $hutool)) {
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed' }
 & $java -ea -cp "$tests;$classes;$classpath;$hutool" local.urlcontroller.RouteTableTest
 if ($LASTEXITCODE -ne 0) { throw 'Route tests failed' }
+& $java -ea -cp "$tests;$classes;$classpath;$hutool" local.urlcontroller.MultiKeywordQueryTest
+if ($LASTEXITCODE -ne 0) { throw 'Multi-keyword tests failed' }
 $package = Join-Path $BuildDirectory 'package\url-controller-search\lib'
 New-Item -ItemType Directory -Force -Path $package | Out-Null
 $pluginJar = Join-Path $package 'url-controller-search.jar'
@@ -39,6 +42,6 @@ try {
     [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive,
         (Join-Path $PSScriptRoot 'src\main\resources\META-INF\plugin.xml'), 'META-INF/plugin.xml') | Out-Null
 } finally { $archive.Dispose() }
-$output = Join-Path $PSScriptRoot '..\URL-Controller-Search-1.0.2.zip'
+$output = Join-Path $PSScriptRoot '..\URL-Controller-Search-1.1.6.zip'
 Compress-Archive -LiteralPath (Join-Path $BuildDirectory 'package\url-controller-search') -DestinationPath $output -Force
 Write-Output "Install ZIP: $([IO.Path]::GetFullPath($output))"
