@@ -12,6 +12,8 @@ import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileEditor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.FileEditorManagerListener;
+import com.intellij.openapi.fileEditor.impl.EditorWindow;
+import com.intellij.openapi.fileEditor.impl.FileEditorManagerImpl;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vcs.changes.PreviewDiffVirtualFile;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -52,8 +54,9 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
             if (processor != null) {
                 context = processor.getContext();
             } else {
-                // New native combined previews expose their shared context through DiffEditorViewer.
+                // New native editors wrap the request processor in DiffEditorViewerFileEditor.
                 Object viewer = editor.getClass().getMethod("getEditorViewer").invoke(editor);
+                processor = viewer instanceof DiffRequestProcessor requestProcessor ? requestProcessor : null;
                 context = (DiffContext) Class.forName("com.intellij.diff.impl.DiffEditorViewer").getMethod("getContext").invoke(viewer);
             }
             Watch watch = new Watch(manager, file, editor, context, processor);
@@ -95,6 +98,18 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
         void active(long now) { lastActiveAt = now; }
 
         boolean expired(long now) { return now - lastActiveAt >= TimeUnit.MINUTES.toNanos(1); }
+    }
+
+    static void closePreview(FileEditorManager manager, VirtualFile file, FileEditor editor) {
+        if (!(manager instanceof FileEditorManagerImpl nativeManager)) return;
+        // The one-argument closeFile only searches the active splitter after focus has moved away.
+        for (EditorWindow editorWindow : nativeManager.getWindows()) {
+            var composite = editorWindow.getComposite(file);
+            if (composite != null && composite.getAllEditors().contains(editor)) {
+                nativeManager.closeFile(file, editorWindow);
+                return;
+            }
+        }
     }
 
     static final class Watch {
@@ -149,7 +164,7 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
                 if (inactivity.expired(System.nanoTime())) {
                     LOG.info("Closing inactive native Commit preview");
                     // Close only the native preview file; IDEA owns the window and disposal lifecycle.
-                    manager.closeFile(file);
+                    closePreview(manager, file, editor);
                 }
             } catch (ReflectiveOperationException failure) {
                 stop();

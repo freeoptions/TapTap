@@ -140,12 +140,24 @@ public final class MultiKeywordPlatformTest {
                         "turning off restores native search");
                 Field textField = FindPopupPanel.class.getDeclaredField("mySearchComponent");
                 textField.setAccessible(true);
-                ((JTextArea) textField.get(panel)).setText("\"public static\" void");
+                ((JTextArea) textField.get(panel)).setText("@Table _outbound\"");
                 checkBox.setSelected(true);
-                FindModel phraseModel = new FindModel();
-                apply.invoke(panel, phraseModel);
-                require(manager.findString("void public static", 0, phraseModel).isStringFound(), "native phrase search");
-                require(!manager.findString("public final static void", 0, phraseModel).isStringFound(), "phrase preserves spaces");
+                FindModel quoteModel = new FindModel();
+                apply.invoke(panel, quoteModel);
+                require(manager.findString("@Table(name = \"order_fulfillment_outbound\")", 0, quoteModel).isStringFound(),
+                        "native multi-keyword search matches a literal trailing quote");
+                require(!manager.findString("@Table(name = \"order_fulfillment_outbound_detail\")", 0, quoteModel).isStringFound(),
+                        "literal trailing quote excludes longer table names");
+                require(!manager.findString("@Table(name = order_fulfillment_outbound)", 0, quoteModel).isStringFound(),
+                        "double quotes participate in matching");
+                require(!checkBox.getToolTipText().contains("尚未闭合"), "literal quote does not trigger unclosed phrase feedback");
+                ((JTextArea) textField.get(panel)).setText("public static");
+                checkBox.setSelected(false);
+                FindModel continuousModel = new FindModel();
+                apply.invoke(panel, continuousModel);
+                require(manager.findString("public static void", 0, continuousModel).isStringFound(), "native mode matches continuous text");
+                require(!manager.findString("public final static void", 0, continuousModel).isStringFound(),
+                        "native mode retains significant spaces");
                 FindModel replaceModel = new FindModel();
                 replaceModel.setReplaceState(true);
                 replaceModel.setStringToFind("public static");
@@ -176,7 +188,7 @@ public final class MultiKeywordPlatformTest {
                 apply.invoke(recreatedPanel, rememberedModel);
                 require(manager.findString("list of orders", 0, rememberedModel).isStringFound(),
                         "restored preference enables matching without another click");
-                System.out.println("PASS: real native Find popup switch, AND search, result offsets, literal phrases, settings isolation, replace isolation");
+                System.out.println("PASS: real native Find popup switch, AND search, result offsets, literal quotes, native continuous matching, settings isolation, replace isolation");
             } catch (ReflectiveOperationException failure) {
                 throw new AssertionError(failure);
             } finally {

@@ -30,6 +30,7 @@ public final class PlatformIntegrationTest {
             CodeInsightTestFixture fixture = factory.createCodeInsightFixture(projectFixture);
             fixture.setUp();
             try { run(fixture); } finally { fixture.tearDown(); }
+            InactiveDiffWindowTest.runNativeClosure();
         } catch (Throwable failure) {
             failure.printStackTrace();
             exit = 1;

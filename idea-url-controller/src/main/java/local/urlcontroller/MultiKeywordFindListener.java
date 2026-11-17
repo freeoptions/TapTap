@@ -32,7 +32,7 @@ public final class MultiKeywordFindListener implements AnActionListener {
     private static final Logger LOG = Logger.getInstance(MultiKeywordFindListener.class);
     private static final String STATE_KEY = "local.urlcontroller.multiKeyword";
     private static final String PREFERENCE_KEY = "local.urlcontroller.multiKeyword.enabled";
-    private static final String HELP = "同一行包含全部关键词，顺序不限；空格分词，双引号保留短语内空格；关键词按原文匹配";
+    private static final String HELP = "同一行包含全部关键词，顺序不限；空格或Tab分词；双引号等字符按原文匹配";
 
     @Override public void beforeActionPerformed(AnAction action, AnActionEvent event) {
         scheduleInstall(action, event);

@@ -42,6 +42,6 @@ try {
     [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive,
         (Join-Path $PSScriptRoot 'src\main\resources\META-INF\plugin.xml'), 'META-INF/plugin.xml') | Out-Null
 } finally { $archive.Dispose() }
-$output = Join-Path $PSScriptRoot '..\URL-Controller-Search-1.1.6.zip'
+$output = Join-Path $PSScriptRoot '..\URL-Controller-Search-1.1.9.zip'
 Compress-Archive -LiteralPath (Join-Path $BuildDirectory 'package\url-controller-search') -DestinationPath $output -Force
 Write-Output "Install ZIP: $([IO.Path]::GetFullPath($output))"

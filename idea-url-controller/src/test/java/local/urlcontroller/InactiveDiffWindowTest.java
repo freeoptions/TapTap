@@ -9,13 +9,21 @@ import com.intellij.diff.util.DiffPlaces;
 import com.intellij.diff.util.DiffUserDataKeys;
 import com.intellij.openapi.fileEditor.FileEditor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileEditor.impl.DockableEditorTabbedContainer;
+import com.intellij.openapi.fileEditor.impl.EditorWindow;
+import com.intellij.openapi.fileEditor.impl.EditorsSplitters;
+import com.intellij.openapi.fileEditor.impl.FileEditorManagerImpl;
+import com.intellij.openapi.fileEditor.impl.FileEditorOpenOptions;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vcs.changes.DiffPreviewProvider;
 import com.intellij.openapi.vcs.changes.PreviewDiffVirtualFile;
 import com.intellij.openapi.vcs.changes.ui.SimpleChangesBrowser;
+import com.intellij.ui.docking.DockManager;
 import com.intellij.testFramework.EdtTestUtil;
+import com.intellij.testFramework.ServiceContainerUtil;
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture;
+import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory;
 import java.util.concurrent.TimeUnit;
 
 /** Checks native preview observation and disposal without opening desktop windows. */
@@ -60,6 +68,7 @@ public final class InactiveDiffWindowTest {
                 Disposer.dispose(editor);
                 editor = null;
                 require(!watch.timer.isRunning(), "native editor disposal stops the timer");
+                verifyViewerEditor(project);
                 verifyOtherSources(project);
                 verifyInactivity();
                 System.out.println("PASS: native Changes preview detection, unchanged open handlers, timer attachment/reuse/disposal, 60-second idle boundary");
@@ -70,6 +79,115 @@ public final class InactiveDiffWindowTest {
                 if (processor != null && !processor.isDisposed()) Disposer.dispose(processor);
             }
         });
+    }
+
+    static void runNativeClosure() {
+        var projectFixture = IdeaTestFixtureFactory.getFixtureFactory().createFixtureBuilder("inactive-preview-close").getFixture();
+        EdtTestUtil.runInEdtAndWait(() -> {
+            try {
+                projectFixture.setUp();
+                try {
+                    verifyCloseInInactiveSplitter(projectFixture.getProject());
+                } finally {
+                    projectFixture.tearDown();
+                }
+            } catch (Exception failure) {
+                throw new AssertionError(failure);
+            }
+        });
+    }
+
+    private static void verifyViewerEditor(Project project) throws ReflectiveOperationException {
+        Class<?> editorClass;
+        try {
+            editorClass = Class.forName("com.intellij.diff.editor.DiffEditorViewerFileEditor");
+        } catch (ClassNotFoundException olderPlatform) {
+            return;
+        }
+        var tree = new SimpleChangesBrowser(project, false, false).getViewer();
+        var processor = (DiffRequestProcessor) Class.forName("com.intellij.openapi.vcs.changes.ChangesViewDiffPreviewProcessor")
+                .getConstructors()[0].newInstance(tree, true);
+        FileEditor editor = null;
+        try {
+            var providerConstructor = Class.forName("com.intellij.openapi.vcs.changes.EditorTabDiffPreviewProvider")
+                    .getDeclaredConstructor(DiffRequestProcessor.class, kotlin.jvm.functions.Function0.class);
+            providerConstructor.setAccessible(true);
+            var provider = (DiffPreviewProvider) providerConstructor.newInstance(processor,
+                    (kotlin.jvm.functions.Function0<String>) () -> "Native viewer Commit preview");
+            var file = new PreviewDiffVirtualFile(provider);
+            editor = (FileEditor) editorClass.getConstructor(com.intellij.openapi.vfs.VirtualFile.class,
+                    Class.forName("com.intellij.diff.impl.DiffEditorViewer")).newInstance(file, processor);
+            require(!(editor instanceof DiffRequestProcessorEditor), "new native editor uses the viewer branch");
+            var watch = CommitPreviewWindows.install(FileEditorManager.getInstance(project), file, editor);
+            require(watch != null && watch.timer.isRunning(), "native viewer editor starts its timer");
+            var processorField = CommitPreviewWindows.Watch.class.getDeclaredField("processor");
+            processorField.setAccessible(true);
+            var observedProcessor = (DiffRequestProcessor) processorField.get(watch);
+            require(CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor),
+                    "native viewer with Default place must reach the inactivity/close path");
+            require(observedProcessor == processor, "native viewer retains its real request processor");
+            require(CommitPreviewWindows.install(FileEditorManager.getInstance(project), file, editor) == watch,
+                    "native viewer reuse keeps one observer");
+            processor.putContextUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG, true);
+            require(!CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor), "native viewer merge stays open");
+            Disposer.dispose(editor);
+            editor = null;
+            require(!watch.timer.isRunning(), "native viewer disposal stops its timer");
+            System.out.println("PASS: real native viewer editor, Default-place timeout eligibility, observer reuse, merge exclusion, disposal");
+        } finally {
+            if (editor != null) Disposer.dispose(editor);
+            if (!processor.isDisposed()) Disposer.dispose(processor);
+        }
+    }
+
+    private static void verifyCloseInInactiveSplitter(Project project) throws ReflectiveOperationException {
+        // Native splitters and docking containers exercise closure without creating desktop windows.
+        var parent = Disposer.newDisposable("inactive-preview-close-test");
+        var scope = kotlinx.coroutines.CoroutineScopeKt.MainScope();
+        var manager = new FileEditorManagerImpl(project, scope);
+        Disposer.register(parent, manager);
+        ServiceContainerUtil.replaceService(project, FileEditorManager.class, manager, parent);
+        var mainSplitters = manager.getSplitters();
+        var factory = DiffContentFactory.getInstance();
+        var mainFile = new SimpleDiffVirtualFile(new SimpleDiffRequest("Active main comparison",
+                factory.create("before"), factory.create("after"), "before", "after"));
+        manager.openFile(mainFile, false);
+        var splitters = new EditorsSplitters(manager, scope);
+        splitters.createCurrentWindow$intellij_platform_ide_impl();
+        EditorWindow window = splitters.getWindows()[0];
+        var container = new DockableEditorTabbedContainer(splitters, false, scope);
+        Disposer.register(parent, container);
+        DockManager.getInstance(project).register(container, parent);
+        var tree = new SimpleChangesBrowser(project, false, false).getViewer();
+        var processor = (DiffRequestProcessor) Class.forName("com.intellij.openapi.vcs.changes.ChangesViewDiffPreviewProcessor")
+                .getConstructors()[0].newInstance(tree, true);
+        try {
+            var providerConstructor = Class.forName("com.intellij.openapi.vcs.changes.EditorTabDiffPreviewProvider")
+                    .getDeclaredConstructor(DiffRequestProcessor.class, kotlin.jvm.functions.Function0.class);
+            providerConstructor.setAccessible(true);
+            var provider = (DiffPreviewProvider) providerConstructor.newInstance(processor,
+                    (kotlin.jvm.functions.Function0<String>) () -> "Inactive splitter Commit preview");
+            var file = new PreviewDiffVirtualFile(provider);
+            var composite = manager.openFile(file, window, new FileEditorOpenOptions()
+                    .withRequestFocus(false).withSelectAsCurrent(false).withReuseOpen(false));
+            FileEditor editor = composite.getAllEditors().get(0);
+            var watch = CommitPreviewWindows.install(manager, file, editor);
+            require(watch != null && watch.timer.isRunning(), "real inactive preview starts its observer");
+            require(window.isFileOpen(file), "preview is open in its own splitter");
+            require(java.util.Arrays.stream(mainSplitters.getWindows()).noneMatch(mainWindow -> mainWindow.isFileOpen(file)),
+                    "preview is absent from the active main splitter");
+            CommitPreviewWindows.closePreview(manager, file, editor);
+            require(!window.isFileOpen(file), "inactive preview closes even while the main splitter is active");
+            require(!editor.isValid(), "closing the inactive preview disposes its editor");
+            require(!watch.timer.isRunning(), "closing the inactive preview releases its idle timer");
+            require(manager.getSplitters() == mainSplitters, "closing a preview preserves the active main splitter");
+            require(manager.isFileOpen(mainFile), "closing the inactive preview retains unrelated main editors");
+            System.out.println("PASS: native inactive splitter preview closure, editor disposal, idle timer release, main splitter retained");
+        } finally {
+            Disposer.dispose(parent);
+            kotlinx.coroutines.CoroutineScopeKt.cancel(scope, null);
+            if (!processor.isDisposed()) Disposer.dispose(processor);
+        }
     }
 
     private static void verifyOtherSources(Project project) {
