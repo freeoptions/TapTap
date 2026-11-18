@@ -26,10 +26,11 @@ import javax.swing.JComponent;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 
-/** Observes native Commit previews without changing how IDEA opens or reuses them. */
+/** Observes native Commit and Git Log previews without changing how IDEA opens or reuses them. */
 public final class CommitPreviewWindows implements FileEditorManagerListener {
     private static final Logger LOG = Logger.getInstance(CommitPreviewWindows.class);
     private static final String WATCH_KEY = "local.urlcontroller.commitPreviewWatch";
+    private static final String GIT_LOG_PREVIEW_CLASS = "com.intellij.vcs.log.ui.frame.VcsLogEditorDiffPreview";
 
     @Override public void fileOpened(FileEditorManager manager, VirtualFile file) {
         if (!isNativePreview(file)) return;
@@ -59,24 +60,37 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
                 processor = viewer instanceof DiffRequestProcessor requestProcessor ? requestProcessor : null;
                 context = (DiffContext) Class.forName("com.intellij.diff.impl.DiffEditorViewer").getMethod("getContext").invoke(viewer);
             }
-            Watch watch = new Watch(manager, file, editor, context, processor);
+            Watch watch = new Watch(manager, file, editor, context, processor, isGitLogPreview(file));
             component.putClientProperty(WATCH_KEY, watch);
             Disposer.register(editor, watch::stop);
             watch.timer.start();
             return watch;
         } catch (ReflectiveOperationException failure) {
-            LOG.warn("Cannot observe native Commit preview", failure);
+            LOG.warn("Cannot observe native VCS preview", failure);
             return null;
         }
     }
 
-    static boolean isSupported(DiffContext context, DiffRequestProcessor processor) {
+    private static boolean isGitLogPreview(VirtualFile file) throws ReflectiveOperationException {
+        Object preview;
+        if (file instanceof PreviewDiffVirtualFile legacyFile) {
+            preview = legacyFile.getProvider();
+        } else {
+            // The native tab file retains its source in both standard and Combined Diff modes.
+            var previewField = file.getClass().getDeclaredField("_preview");
+            previewField.setAccessible(true);
+            preview = previewField.get(file);
+        }
+        return preview != null && GIT_LOG_PREVIEW_CLASS.equals(preview.getClass().getName());
+    }
+
+    static boolean isSupported(DiffContext context, DiffRequestProcessor processor, boolean gitLogPreview) {
         DiffRequest request = processor == null ? null : processor.getActiveRequest();
         if (Boolean.TRUE.equals(context.getUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG))
                 || request != null && Boolean.TRUE.equals(request.getUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG))) return false;
         String place = context.getUserData(DiffUserDataKeys.PLACE);
         // IDEA's own ChangesView editor processor uses the Default place, not ChangesView.
-        return DiffPlaces.CHANGES_VIEW.equals(place) || DiffPlaces.COMMIT_DIALOG.equals(place)
+        return gitLogPreview || DiffPlaces.CHANGES_VIEW.equals(place) || DiffPlaces.COMMIT_DIALOG.equals(place)
                 || processor != null && processor.getClass().getName().equals(
                         "com.intellij.openapi.vcs.changes.ChangesViewDiffPreviewProcessor");
     }
@@ -119,6 +133,7 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
         private final FileEditor editor;
         private final DiffContext context;
         private final DiffRequestProcessor processor;
+        private final boolean gitLogPreview;
         private final Inactivity inactivity = new Inactivity(System.nanoTime());
         private final WindowAdapter focusListener = new WindowAdapter() {
             @Override public void windowGainedFocus(WindowEvent event) { inactivity.active(System.nanoTime()); }
@@ -126,12 +141,14 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
         };
         private Window window;
 
-        private Watch(FileEditorManager manager, VirtualFile file, FileEditor editor, DiffContext context, DiffRequestProcessor processor) {
+        private Watch(FileEditorManager manager, VirtualFile file, FileEditor editor, DiffContext context,
+                      DiffRequestProcessor processor, boolean gitLogPreview) {
             this.manager = manager;
             this.file = file;
             this.editor = editor;
             this.context = context;
             this.processor = processor;
+            this.gitLogPreview = gitLogPreview;
             timer = new Timer(5000, event -> tick());
         }
 
@@ -142,7 +159,7 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
             }
             try {
                 JComponent component = editor.getComponent();
-                Window current = component.isShowing() && isSupported(context, processor) && isSeparateWindow(manager, file)
+                Window current = component.isShowing() && supportsAutoClose() && isSeparateWindow(manager, file)
                         ? SwingUtilities.getWindowAncestor(component) : null;
                 if (current != window) {
                     if (window != null) window.removeWindowFocusListener(focusListener);
@@ -162,14 +179,18 @@ public final class CommitPreviewWindows implements FileEditorManagerListener {
                     }
                 }
                 if (inactivity.expired(System.nanoTime())) {
-                    LOG.info("Closing inactive native Commit preview");
+                    LOG.info("Closing inactive native VCS preview");
                     // Close only the native preview file; IDEA owns the window and disposal lifecycle.
                     closePreview(manager, file, editor);
                 }
             } catch (ReflectiveOperationException failure) {
                 stop();
-                LOG.warn("Cannot determine native Commit preview window; auto-close disabled for this preview", failure);
+                LOG.warn("Cannot determine native VCS preview window; auto-close disabled for this preview", failure);
             }
+        }
+
+        boolean supportsAutoClose() {
+            return isSupported(context, processor, gitLogPreview);
         }
 
         void stop() {

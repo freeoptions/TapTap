@@ -7,6 +7,7 @@ import com.intellij.diff.impl.DiffRequestProcessor;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.diff.util.DiffPlaces;
 import com.intellij.diff.util.DiffUserDataKeys;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.fileEditor.FileEditor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.impl.DockableEditorTabbedContainer;
@@ -14,16 +15,19 @@ import com.intellij.openapi.fileEditor.impl.EditorWindow;
 import com.intellij.openapi.fileEditor.impl.EditorsSplitters;
 import com.intellij.openapi.fileEditor.impl.FileEditorManagerImpl;
 import com.intellij.openapi.fileEditor.impl.FileEditorOpenOptions;
+import com.intellij.openapi.options.advanced.AdvancedSettings;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vcs.changes.DiffPreviewProvider;
 import com.intellij.openapi.vcs.changes.PreviewDiffVirtualFile;
 import com.intellij.openapi.vcs.changes.ui.SimpleChangesBrowser;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.docking.DockManager;
 import com.intellij.testFramework.EdtTestUtil;
 import com.intellij.testFramework.ServiceContainerUtil;
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture;
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /** Checks native preview observation and disposal without opening desktop windows. */
@@ -41,9 +45,9 @@ public final class InactiveDiffWindowTest {
                 processor = (DiffRequestProcessor) processorClass.getConstructors()[0].newInstance(tree, true);
                 require("Default".equals(processor.getContext().getUserData(DiffUserDataKeys.PLACE)),
                         "native Changes editor uses Default, which the old window extension missed");
-                require(CommitPreviewWindows.isSupported(processor.getContext(), processor), "native Changes/Unversioned preview qualifies");
+                require(CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "native Changes/Unversioned preview qualifies");
                 processor.putContextUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG, true);
-                require(!CommitPreviewWindows.isSupported(processor.getContext(), processor), "merge preview stays open");
+                require(!CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "merge preview stays open");
                 processor.putContextUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG, null);
                 var providerConstructor = Class.forName("com.intellij.openapi.vcs.changes.EditorTabDiffPreviewProvider")
                         .getDeclaredConstructor(DiffRequestProcessor.class, kotlin.jvm.functions.Function0.class);
@@ -123,13 +127,13 @@ public final class InactiveDiffWindowTest {
             var processorField = CommitPreviewWindows.Watch.class.getDeclaredField("processor");
             processorField.setAccessible(true);
             var observedProcessor = (DiffRequestProcessor) processorField.get(watch);
-            require(CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor),
+            require(CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor, false),
                     "native viewer with Default place must reach the inactivity/close path");
             require(observedProcessor == processor, "native viewer retains its real request processor");
             require(CommitPreviewWindows.install(FileEditorManager.getInstance(project), file, editor) == watch,
                     "native viewer reuse keeps one observer");
             processor.putContextUserData(DiffUserDataKeys.MERGE_EDITOR_FLAG, true);
-            require(!CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor), "native viewer merge stays open");
+            require(!CommitPreviewWindows.isSupported(processor.getContext(), observedProcessor, false), "native viewer merge stays open");
             Disposer.dispose(editor);
             editor = null;
             require(!watch.timer.isRunning(), "native viewer disposal stops its timer");
@@ -183,10 +187,55 @@ public final class InactiveDiffWindowTest {
             require(manager.getSplitters() == mainSplitters, "closing a preview preserves the active main splitter");
             require(manager.isFileOpen(mainFile), "closing the inactive preview retains unrelated main editors");
             System.out.println("PASS: native inactive splitter preview closure, editor disposal, idle timer release, main splitter retained");
+            verifyGitLogPreview(project, manager, window, parent);
         } finally {
             Disposer.dispose(parent);
             kotlinx.coroutines.CoroutineScopeKt.cancel(scope, null);
             if (!processor.isDisposed()) Disposer.dispose(processor);
+        }
+    }
+
+    private static void verifyGitLogPreview(Project project, FileEditorManagerImpl manager, EditorWindow window,
+                                            Disposable parent) throws ReflectiveOperationException {
+        Class<?> modelClass = Class.forName("com.intellij.vcs.log.ui.frame.VcsLogAsyncChangesTreeModel");
+        Class<?> propertiesClass = Class.forName("com.intellij.vcs.log.impl.VcsLogProjectTabsProperties");
+        var properties = propertiesClass.getConstructor().newInstance();
+        var scope = kotlinx.coroutines.CoroutineScopeKt.MainScope();
+        var originalCombinedDiff = AdvancedSettings.getBoolean("enable.combined.diff");
+        try {
+            Class<?> logManagerClass = Class.forName("com.intellij.vcs.log.impl.VcsLogManager");
+            var logManager = logManagerClass.getConstructors()[0].newInstance(project, scope, properties,
+                    Map.of(), "inactive-git-log-preview", false,
+                    (kotlin.jvm.functions.Function2<Object, Throwable, kotlin.Unit>) (source, error) -> {
+                        throw new AssertionError(error);
+                    });
+            var logData = logManagerClass.getMethod("getDataManager").invoke(logManager);
+            var tabProperties = propertiesClass.getMethod("createProperties", String.class).invoke(properties, "test");
+            var model = modelClass.getConstructors()[0].newInstance(logData, tabProperties, parent);
+            Class<?> browserClass = Class.forName("com.intellij.vcs.log.ui.frame.VcsLogChangesBrowser");
+            var browser = browserClass.getConstructors()[0].newInstance(project, model, parent);
+            Class<?> previewClass = Class.forName("com.intellij.vcs.log.ui.frame.VcsLogEditorDiffPreview");
+            var preview = (Disposable) previewClass.getConstructor(browserClass).newInstance(browser);
+            Disposer.register(parent, preview);
+            var file = (VirtualFile) previewClass.getMethod("getPreviewFile").invoke(preview);
+            for (boolean combinedDiff : new boolean[]{false, true}) {
+                AdvancedSettings.setBoolean("enable.combined.diff", combinedDiff);
+                var composite = manager.openFile(file, window, new FileEditorOpenOptions()
+                        .withRequestFocus(false).withSelectAsCurrent(false).withReuseOpen(false));
+                FileEditor editor = composite.getAllEditors().get(0);
+                Object viewer = editor.getClass().getMethod("getEditorViewer").invoke(editor);
+                require((viewer instanceof DiffRequestProcessor) != combinedDiff, "Git Log uses the selected diff mode");
+                var watch = CommitPreviewWindows.install(manager, file, editor);
+                require(watch != null && watch.supportsAutoClose(),
+                        "native Git Log preview qualifies for auto-close, Combined Diff=" + combinedDiff);
+                CommitPreviewWindows.closePreview(manager, file, editor);
+                require(!window.isFileOpen(file), "native Git Log preview closes in its own splitter");
+                require(!watch.timer.isRunning(), "closing a Git Log preview releases its timer");
+            }
+            System.out.println("PASS: native Git Log preview eligibility and closure in standard and Combined Diff modes");
+        } finally {
+            AdvancedSettings.setBoolean("enable.combined.diff", originalCombinedDiff);
+            kotlinx.coroutines.CoroutineScopeKt.cancel(scope, null);
         }
     }
 
@@ -198,13 +247,13 @@ public final class InactiveDiffWindowTest {
         require(!CommitPreviewWindows.isNativePreview(file), "unrelated diff files are not observed");
         DiffRequestProcessor processor = file.createProcessor(project);
         try {
-            require(!CommitPreviewWindows.isSupported(processor.getContext(), processor), "unrelated comparison stays open");
+            require(!CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "unrelated comparison stays open");
             processor.putContextUserData(DiffUserDataKeys.PLACE, DiffPlaces.CHANGES_VIEW);
-            require(CommitPreviewWindows.isSupported(processor.getContext(), processor), "Changes context qualifies");
+            require(CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "Changes context qualifies");
             processor.putContextUserData(DiffUserDataKeys.PLACE, DiffPlaces.COMMIT_DIALOG);
-            require(CommitPreviewWindows.isSupported(processor.getContext(), processor), "Commit context qualifies");
+            require(CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "Commit context qualifies");
             processor.putContextUserData(DiffUserDataKeys.PLACE, DiffPlaces.VCS_LOG_VIEW);
-            require(!CommitPreviewWindows.isSupported(processor.getContext(), processor), "history preview stays open");
+            require(!CommitPreviewWindows.isSupported(processor.getContext(), processor, false), "history preview stays open");
         } finally {
             Disposer.dispose(processor);
         }
